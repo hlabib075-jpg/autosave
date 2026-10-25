@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Auto Save Backend</title>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+</head>
+<body style="background:#000; color:#0f0; font-family:monospace; padding:20px;">
+    <h2>✅ AUTO-SAVE SYSTEM RUNNING...</h2>
+    <div id="log"></div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyA2SeBKwndE5CYYtPhPmFBBSgNlmtGPoPo",
+            authDomain: "panel-f1.firebaseapp.com",
+            databaseURL: "https://panel-f1-default-rtdb.firebaseio.com",
+            projectId: "panel-f1",
+            storageBucket: "panel-f1.firebasestorage.app",
+            messagingSenderId: "739229718234",
+            appId: "1:739229718234:web:1f833271cdf53fcb4eb7e3",
+            measurementId: "G-R0QGW250E0"
+        };
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        const SIG_REF = 'hack_signal/current';
+        const SIG_HIST_REF = 'hack_signal/history';
+        const MODE_URL = 'https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json';
+        const HISTORY_LIMIT = 150;
+
+        function logMsg(msg) {
+            const div = document.createElement('div');
+            div.innerText = new Date().toLocaleTimeString() + " - " + msg;
+            document.getElementById('log').prepend(div);
+        }
+
+        async function checkAndSave() {
+            try {
+                const res = await fetch(MODE_URL + '?t=' + Date.now());
+                const json = await res.json();
+                const list = json.data?.list || json.list || [];
+                if (!list.length) return;
+
+                const sigSnap = await db.ref(SIG_REF).once('value');
+                const sig = sigSnap.val();
+
+                if (sig && sig.period) {
+                    const found = list.find(x => String(x.issueNumber) === String(sig.period));
+                    if (found) {
+                        const rNum = parseInt(found.number !== undefined ? found.number : found.result);
+                        const rColor = String(found.color || '').toLowerCase();
+
+                        let popped = null;
+                        await db.ref(SIG_REF).transaction(cur => {
+                            if (!cur || String(cur.period) !== String(sig.period)) return;
+                            popped = cur;
+                            return null;
+                        });
+
+                        if (popped) {
+                            const pred = String(popped.prediction || '').toUpperCase();
+                            let win = false;
+                            if (pred === 'BIG') win = rNum >= 5;
+                            else if (pred === 'SMALL') win = rNum < 5;
+                            else if (pred === 'RED') win = rColor.includes('red');
+                            else if (pred === 'GREEN') win = rColor.includes('green');
+                            const jackpot = Number(popped.targetNum) === Number(rNum);
+
+                            await db.ref(SIG_HIST_REF).push({
+                                period: popped.period,
+                                prediction: popped.prediction,
+                                targetNum: popped.targetNum,
+                                actual: rNum,
+                                actualColor: rColor,
+                                win, jackpot,
+                                mode: popped.mode || 'auto',
+                                timestamp: Date.now()
+                            });
+                            
+                            await pruneHistory();
+                            logMsg("✅ Saved Period: " + popped.period + " | Result: " + rNum);
+                        }
+                    } else {
+                        logMsg("⏳ Waiting for result of period: " + sig.period);
+                    }
+                } else {
+                    logMsg("ℹ️ No active signal found in Firebase.");
+                }
+            } catch (e) {
+                logMsg("❌ Error: " + e.message);
+            }
+        }
+
+        async function pruneHistory() {
+            const snap = await db.ref(SIG_HIST_REF).once('value');
+            const items = snap.val() || {};
+            const entries = Object.entries(items).sort((a, b) => (a[1].timestamp || 0) - (b[1].timestamp || 0));
+            if (entries.length > HISTORY_LIMIT) {
+                const toRemove = entries.slice(0, entries.length - HISTORY_LIMIT);
+                const updates = {};
+                toRemove.forEach(([key]) => { updates[key] = null; });
+                await db.ref(SIG_HIST_REF).update(updates);
+            }
+        }
+
+        checkAndSave();
+    </script>
+</body>
+</html>
